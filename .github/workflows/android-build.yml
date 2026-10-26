@@ -1,10 +1,13 @@
+
 name: VANTA Android Build
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -12,6 +15,7 @@ permissions:
 
 jobs:
   build:
+    name: Build and Test VANTA
     runs-on: ubuntu-latest
 
     steps:
@@ -24,18 +28,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-            - name: Set up Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
 
-      - name: Install Android platform
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Accept Android SDK licenses
+        run: yes | sdkmanager --licenses || true
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+
+      - name: Check Gradle version
+        run: gradle --version
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
@@ -50,3 +64,5 @@ jobs:
           name: VANTA-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
+          
