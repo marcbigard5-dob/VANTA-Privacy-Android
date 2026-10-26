@@ -30,11 +30,12 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
 
       - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses || true
+        shell: bash
+        run: |
+          set -o pipefail
+          yes | sdkmanager --licenses
 
       - name: Install Android SDK packages
         run: |
@@ -48,8 +49,10 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Check Gradle version
-        run: gradle --version
+      - name: Check Java and Gradle
+        run: |
+          java -version
+          gradle --version
 
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
