@@ -2,6 +2,7 @@ package com.vanta.privacy
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -16,24 +17,36 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.vanta.privacy.monitor.DeviceStatus
 import com.vanta.privacy.monitor.DeviceStatusMonitor
+import java.security.MessageDigest
+import java.net.URI
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: DeviceStatusMonitor
-
+    private var selectedFileUri by mutableStateOf<Uri?>(null)
+    private var fileReport by mutableStateOf("Choose a file to calculate its SHA-256 fingerprint locally.")
+    private val filePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            selectedFileUri = uri
+            fileReport = inspectSelectedFile(uri)
+        }
+    }
     private val bluetoothPermissionRequest =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { refreshStatus() }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,12 +54,38 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    VantaDashboard(
+                    VantaApp(
                         getStatus = { monitor.readStatus() },
-                        requestBluetoothPermission = { requestBluetoothPermission() }
+                        requestBluetoothPermission = { requestBluetoothPermission() },
+                        onChooseFile = { filePicker.launch(arrayOf("*/*")) },
+                        fileReport = fileReport
                     )
                 }
             }
+        }
+    }
+
+    private fun inspectSelectedFile(uri: Uri): String {
+        return try {
+            val name = contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && index >= 0) cursor.getString(index) else null
+            } ?: uri.lastPathSegment ?: "Selected file"
+            val digest = MessageDigest.getInstance("SHA-256")
+            var bytes = 0L
+            contentResolver.openInputStream(uri)?.use { input ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                    bytes += count
+                }
+            } ?: return "Could not open the selected file. Please choose it again."
+            val hash = digest.digest().joinToString("") { "%02x".format(it) }
+            "FILE FINGERPRINT\nName: $name\nSize: $bytes bytes\nSHA-256:\n$hash\n\nThis computes a file fingerprint only. It does not prove the file is safe or scan it for malware. Processing stays on this device."
+        } catch (e: Exception) {
+            "File inspection failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}"
         }
     }
 
@@ -56,93 +95,143 @@ class MainActivity : ComponentActivity() {
             != PackageManager.PERMISSION_GRANTED
         ) {
             bluetoothPermissionRequest.launch(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            refreshStatus()
         }
-    }
-
-    private fun refreshStatus() {
-        // The Compose screen refreshes on its own timer; this hook is kept for the permission result.
     }
 }
 
+private enum class VantaTab { HOME, FILE, URL }
+
 @Composable
-private fun VantaDashboard(
+private fun VantaApp(
     getStatus: () -> DeviceStatus,
-    requestBluetoothPermission: () -> Unit
+    requestBluetoothPermission: () -> Unit,
+    onChooseFile: () -> Unit,
+    fileReport: String
 ) {
+    var tab by remember { mutableStateOf(VantaTab.HOME) }
     var status by remember { mutableStateOf(getStatus()) }
+    var url by remember { mutableStateOf("") }
+    var urlReport by remember { mutableStateOf("Enter a URL to run a local structure and warning check.") }
 
     LaunchedEffect(Unit) {
         while (true) {
             status = getStatus()
-            kotlinx.coroutines.delay(2500)
+            kotlinx.coroutines.delay(5000)
         }
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(20.dp),
+        modifier = Modifier.fillMaxSize().padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            Text("VANTA Privacy", style = MaterialTheme.typography.headlineMedium)
-            Text("Local monitoring prototype · v0.1.0")
+            Text("VANTA", style = MaterialTheme.typography.headlineLarge)
+            Text("PRIVACY LAB  /  ON-DEVICE TOOLS", style = MaterialTheme.typography.labelMedium)
+            Text("Local-first privacy utilities. No claim of complete device protection.")
         }
         item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Privacy status", style = MaterialTheme.typography.titleMedium)
-                    Text("Mode: monitor and alert")
-                    Text("Processing: local by default")
-                    Text("VPN firewall: NOT IMPLEMENTED")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { tab = VantaTab.HOME }, modifier = Modifier.weight(1f)) { Text("Overview") }
+                OutlinedButton(onClick = { tab = VantaTab.FILE }, modifier = Modifier.weight(1f)) { Text("File hash") }
+                OutlinedButton(onClick = { tab = VantaTab.URL }, modifier = Modifier.weight(1f)) { Text("URL check") }
+            }
+        }
+        when (tab) {
+            VantaTab.HOME -> {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("DEVICE STATUS", style = MaterialTheme.typography.titleMedium)
+                            Text("Network: ${status.networkSummary}")
+                            Text("Wi-Fi: ${status.wifiSummary}")
+                            Text("Bluetooth: ${status.bluetoothSummary}")
+                            Text("VPN firewall: NOT IMPLEMENTED")
+                            Button(onClick = { status = getStatus() }, modifier = Modifier.fillMaxWidth()) { Text("Refresh status") }
+                            OutlinedButton(onClick = requestBluetoothPermission, modifier = Modifier.fillMaxWidth()) { Text("Grant Bluetooth status permission") }
+                        }
+                    }
+                }
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("WHAT THIS BUILD REALLY DOES", style = MaterialTheme.typography.titleMedium)
+                            Text("• Reads basic Android network transport status.")
+                            Text("• Reads Bluetooth enabled/disabled state when permission allows.")
+                            Text("• Calculates SHA-256 for a file you explicitly select.")
+                            Text("• Checks URL structure and common warning signs locally.")
+                            Text("It does not block traffic, identify all malware, or query an online threat-intelligence service.")
+                        }
+                    }
+                }
+            }
+            VantaTab.FILE -> {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("LOCAL FILE FINGERPRINT", style = MaterialTheme.typography.titleMedium)
+                            Text("Choose a file through Android's system picker. VANTA reads it to calculate a SHA-256 hash; it does not upload the file.")
+                            Button(onClick = onChooseFile, modifier = Modifier.fillMaxWidth()) { Text("Choose file") }
+                            SelectionContainer { Text(fileReport, style = MaterialTheme.typography.bodyMedium) }
+                            Text("A hash helps verify whether two files are identical. It is not a malware verdict.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+            VantaTab.URL -> {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("LOCAL URL CHECK", style = MaterialTheme.typography.titleMedium)
+                            OutlinedTextField(
+                                value = url,
+                                onValueChange = { url = it; urlReport = "Press Check URL to analyze this address." },
+                                label = { Text("https://example.com") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                            Button(onClick = { urlReport = analyzeUrl(url) }, modifier = Modifier.fillMaxWidth()) { Text("Check URL") }
+                            SelectionContainer { Text(urlReport) }
+                            Text("This is a local heuristic check, not a reputation lookup. Do not enter private tokens or password-reset links.", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
                 }
             }
         }
-        item { StatusCard("Network", status.networkSummary, "Reports connectivity state only; does not inspect packet contents.") }
-        item { StatusCard("Wi-Fi", status.wifiSummary, "Android may restrict detailed Wi-Fi information by OS version and permission.") }
-        item { StatusCard("Bluetooth", status.bluetoothSummary, "Device details require permission and are intentionally not enumerated yet.") }
         item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Permissions", style = MaterialTheme.typography.titleMedium)
-                    Text("Bluetooth permission is requested only after you choose to check it.")
-                    Button(onClick = requestBluetoothPermission) { Text("Check Bluetooth permission") }
-                }
-            }
-        }
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Content Inspector", style = MaterialTheme.typography.titleMedium)
-                    Text("Next milestone: user-selected file and URL inspection.")
-                    Text("No files are uploaded or analyzed remotely by this prototype.")
-                }
-            }
-        }
-        item {
-            Spacer(Modifier.height(4.dp))
-            OutlinedButton(onClick = { status = getStatus() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Refresh status")
-            }
-            Text(
-                "Important: this prototype is a status dashboard, not a complete security product. It does not block traffic, inspect Bluetooth packets, or scan all apps.",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            Spacer(Modifier.height(8.dp))
+            Text("VANTA Privacy · prototype build · features are labelled honestly", style = MaterialTheme.typography.labelSmall)
         }
     }
 }
 
-@Composable
-private fun StatusCard(title: String, value: String, detail: String) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Text("MONITOR")
-            }
-            Text(value)
-            Text(detail, style = MaterialTheme.typography.bodySmall)
-        }
+private fun analyzeUrl(input: String): String {
+    val raw = input.trim()
+    if (raw.isEmpty()) return "Enter a URL first."
+    if (raw.any { it.isWhitespace() }) return "WARNING: URL contains whitespace. Copy the address carefully and check for accidental characters."
+    val parsed = try { URI(raw) } catch (_: Exception) {
+        return "INVALID URL FORMAT\nThe address could not be parsed. Check the spelling and include https:// or http://."
+    }
+    val scheme = parsed.scheme?.lowercase(Locale.ROOT)
+    val host = parsed.host?.lowercase(Locale.ROOT)
+    val findings = mutableListOf<String>()
+    if (scheme != "https" && scheme != "http") findings += "WARNING: scheme is missing or is not HTTP/HTTPS."
+    if (scheme == "http") findings += "WARNING: HTTP does not encrypt the connection to the website."
+    if (host.isNullOrBlank()) findings += "WARNING: no valid hostname was detected."
+    if (parsed.rawUserInfo != null) findings += "WARNING: address contains user-info before the host; this can disguise the real destination."
+    if (host?.startsWith("xn--") == true || host?.split(".")?.any { it.startsWith("xn--") } == true) {
+        findings += "CAUTION: hostname contains an internationalized/punycode label; verify the spelling carefully."
+    }
+    val shorteners = setOf("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "rb.gy", "ow.ly")
+    if (host in shorteners) findings += "CAUTION: URL uses a known link-shortening domain, so the final destination is hidden."
+    if (raw.length > 200) findings += "CAUTION: unusually long URL; inspect the full address carefully."
+    if (raw.count { it == '@' } > 0) findings += "CAUTION: contains '@'; confirm the actual hostname shown above."
+    if (findings.isEmpty()) findings += "No basic structural warning detected. This does NOT establish that the website is trustworthy."
+    return buildString {
+        append("LOCAL URL REPORT\n")
+        append("Scheme: ${scheme ?: "unknown"}\n")
+        append("Host: ${host ?: "not detected"}\n")
+        append("Length: ${raw.length} characters\n\n")
+        append(findings.joinToString(separator = "\n") { "• $it" })
+        append("\n\nNo website was contacted. No malware database or live reputation service was queried.")
     }
 }
