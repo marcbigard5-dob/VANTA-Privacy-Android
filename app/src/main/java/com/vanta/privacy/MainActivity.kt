@@ -29,18 +29,24 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.vanta.privacy.monitor.DeviceStatus
 import com.vanta.privacy.monitor.DeviceStatusMonitor
 import java.security.MessageDigest
 
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: DeviceStatusMonitor
-    private var selectedFileUri by mutableStateOf<Uri?>(null)
     private var fileReport by mutableStateOf("Choose a file to calculate its SHA-256 fingerprint locally.")
     private val filePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            selectedFileUri = uri
-            fileReport = inspectSelectedFile(uri)
+            fileReport = "Calculating SHA-256 locally…"
+            lifecycleScope.launch {
+                val report = withContext(Dispatchers.IO) { inspectSelectedFile(uri) }
+                fileReport = report
+            }
         }
     }
     private val bluetoothPermissionRequest =
